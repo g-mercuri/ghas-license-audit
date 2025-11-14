@@ -14,6 +14,9 @@ Audit GitHub Advanced Security (GHAS) license usage and track active committers 
 
 ## Requirements
 
+> **⚠️ IMPORTANT**  
+> This tool works only with GitHub's **new billing SKU** for Advanced Security, which includes the two new products: **Code Security** and **Secret Protection**.
+
 | Component | PowerShell | Bash |
 |-----------|------------|------|
 | **GitHub CLI** | ✓ Required | ✓ Required |
