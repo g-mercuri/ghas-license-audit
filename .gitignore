@@ -1,0 +1,28 @@
+# GHAS Audit Reports
+ghas-reports/
+
+# PowerShell
+*.ps1xml
+
+# IDE / Editor
+.vscode/
+.vs/
+*.code-workspace
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+~$*
+
+# Backup files
+*.bak
+*.backup
