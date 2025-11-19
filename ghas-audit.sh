@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+
 # ============================================================================
 # DISCLAIMER: 
 # This script is provided "AS IS" without warranty of any kind, either express or implied,
@@ -487,7 +489,15 @@ get_ghas_billing_info() {
         echo -e "${GRAY}  → Fetching billing data for $product...${NC}" >&2
         local response=$(invoke_github_api "/orgs/$organization/settings/billing/advanced-security?advanced_security_product=$product" false 0)
         
-        if [[ -n "$response" ]] && [[ "$response" != "{}" ]]; then
+        # Debug: show response length and first chars
+        if [[ -n "$response" ]]; then
+            echo -e "${DARKGRAY}     Response received: ${#response} chars${NC}" >&2
+        else
+            echo -e "${DARKGRAY}     No response received${NC}" >&2
+        fi
+        
+        # Validate JSON before processing
+        if [[ -n "$response" ]] && echo "$response" | jq empty 2>/dev/null; then
             local prod_committers=$(echo "$response" | jq -r '.total_advanced_security_committers // 0')
             local prod_count=$(echo "$response" | jq -r '.total_count // 0')
             local prod_max=$(echo "$response" | jq -r '.maximum_advanced_security_committers // 0')
@@ -1309,9 +1319,14 @@ for REPO_NAME in "${!REPO_COMMITTERS[@]}"; do
 done
 
 LICENSES_CSV="$REPORT_DIR/ghas-licensing.csv"
-echo "$LICENSES_DATA" | jq -r 'sort_by(.Repository) | (.[0] | keys_unsorted) as $keys | $keys, map([.[ $keys[] ]])[] | @csv' > "$LICENSES_CSV"
 LICENSES_COUNT=$(echo "$LICENSES_DATA" | jq 'length')
-echo -e "${GREEN}  ✓ ghas-licensing.csv ($LICENSES_COUNT repos)${NC}"
+if [[ $LICENSES_COUNT -gt 0 ]]; then
+    echo "$LICENSES_DATA" | jq -r 'sort_by(.Repository) | (.[0] | keys_unsorted) as $keys | $keys, map([.[ $keys[] ]])[] | @csv' > "$LICENSES_CSV"
+    echo -e "${GREEN}  ✓ ghas-licensing.csv ($LICENSES_COUNT repos)${NC}"
+else
+    echo "Repository" > "$LICENSES_CSV"
+    echo -e "${YELLOW}  ⚠ ghas-licensing.csv (0 repos - no GHAS enabled)${NC}"
+fi
 
 # repositories-metadata.csv (optional - requires DETAILED_AUDIT)
 if [[ "$DETAILED_AUDIT" == "true" ]] && [[ ${#REPOSITORY_DETAILS[@]} -gt 0 ]]; then
@@ -1327,9 +1342,14 @@ if [[ "$DETAILED_AUDIT" == "true" ]] && [[ ${#REPOSITORY_DETAILS[@]} -gt 0 ]]; t
     done
     
     DETAILS_CSV="$REPORT_DIR/repositories-metadata.csv"
-    echo "$DETAILS_DATA" | jq -r 'sort_by(.Repository) | (.[0] | keys_unsorted) as $keys | $keys, map([.[ $keys[] ]])[] | @csv' > "$DETAILS_CSV"
     DETAILS_COUNT=$(echo "$DETAILS_DATA" | jq 'length')
-    echo -e "${GREEN}  ✓ repositories-metadata.csv ($DETAILS_COUNT repos)${NC}"
+    if [[ $DETAILS_COUNT -gt 0 ]]; then
+        echo "$DETAILS_DATA" | jq -r 'sort_by(.Repository) | (.[0] | keys_unsorted) as $keys | $keys, map([.[ $keys[] ]])[] | @csv' > "$DETAILS_CSV"
+        echo -e "${GREEN}  ✓ repositories-metadata.csv ($DETAILS_COUNT repos)${NC}"
+    else
+        echo "Repository" > "$DETAILS_CSV"
+        echo -e "${YELLOW}  ⚠ repositories-metadata.csv (0 repos)${NC}"
+    fi
 fi
 
 # repositories-features.csv (optional - requires DETAILED_AUDIT)
@@ -1342,9 +1362,14 @@ if [[ "$DETAILED_AUDIT" == "true" ]] && [[ ${#REPOSITORY_FEATURES[@]} -gt 0 ]]; 
     done
     
     FEATURES_CSV="$REPORT_DIR/repositories-features.csv"
-    echo "$FEATURES_DATA" | jq -r 'sort_by(.Repository) | (.[0] | keys_unsorted) as $keys | $keys, map([.[ $keys[] ]])[] | @csv' > "$FEATURES_CSV"
     FEATURES_COUNT=$(echo "$FEATURES_DATA" | jq 'length')
-    echo -e "${GREEN}  ✓ repositories-features.csv ($FEATURES_COUNT repos)${NC}"
+    if [[ $FEATURES_COUNT -gt 0 ]]; then
+        echo "$FEATURES_DATA" | jq -r 'sort_by(.Repository) | (.[0] | keys_unsorted) as $keys | $keys, map([.[ $keys[] ]])[] | @csv' > "$FEATURES_CSV"
+        echo -e "${GREEN}  ✓ repositories-features.csv ($FEATURES_COUNT repos)${NC}"
+    else
+        echo "Repository" > "$FEATURES_CSV"
+        echo -e "${YELLOW}  ⚠ repositories-features.csv (0 repos)${NC}"
+    fi
 fi
 
 # active-committers.csv (always generated - summary)
@@ -1390,9 +1415,14 @@ for USERNAME in "${!UNIQUE_COMMITTERS[@]}"; do
 done
 
 COMMITTERS_CSV="$REPORT_DIR/active-committers.csv"
-echo "$COMMITTERS_SUMMARY" | jq -r 'sort_by(.Username) | (.[0] | keys_unsorted) as $keys | $keys, map([.[ $keys[] ]])[] | @csv' > "$COMMITTERS_CSV"
 COMMITTERS_COUNT=$(echo "$COMMITTERS_SUMMARY" | jq 'length')
-echo -e "${GREEN}  ✓ active-committers.csv ($COMMITTERS_COUNT unique committers)${NC}"
+if [[ $COMMITTERS_COUNT -gt 0 ]]; then
+    echo "$COMMITTERS_SUMMARY" | jq -r 'sort_by(.Username) | (.[0] | keys_unsorted) as $keys | $keys, map([.[ $keys[] ]])[] | @csv' > "$COMMITTERS_CSV"
+    echo -e "${GREEN}  ✓ active-committers.csv ($COMMITTERS_COUNT unique committers)${NC}"
+else
+    echo "Username" > "$COMMITTERS_CSV"
+    echo -e "${YELLOW}  ⚠ active-committers.csv (0 committers)${NC}"
+fi
 
 # active-committers-detailed.csv (optional - requires DETAILED_AUDIT)
 if [[ "$DETAILED_AUDIT" == "true" ]]; then
@@ -1471,11 +1501,14 @@ if [[ "$DETAILED_AUDIT" == "true" ]]; then
         fi
     done
     
-    if [[ $(echo "$DETAILED_COMMITTERS" | jq 'length') -gt 0 ]]; then
-        DETAILED_CSV="$REPORT_DIR/active-committers-detailed.csv"
+    DETAILED_CSV="$REPORT_DIR/active-committers-detailed.csv"
+    DETAILED_COUNT=$(echo "$DETAILED_COMMITTERS" | jq 'length')
+    if [[ $DETAILED_COUNT -gt 0 ]]; then
         echo "$DETAILED_COMMITTERS" | jq -r 'sort_by(.Username, .Repository) | (.[0] | keys_unsorted) as $keys | $keys, map([.[ $keys[] ]])[] | @csv' > "$DETAILED_CSV"
-        DETAILED_COUNT=$(echo "$DETAILED_COMMITTERS" | jq 'length')
         echo -e "${GREEN}  ✓ active-committers-detailed.csv ($DETAILED_COUNT user-repository combinations)${NC}"
+    else
+        echo "Repository,Username" > "$DETAILED_CSV"
+        echo -e "${YELLOW}  ⚠ active-committers-detailed.csv (0 committers)${NC}"
     fi
 fi
 
