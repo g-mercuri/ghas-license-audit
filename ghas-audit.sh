@@ -724,7 +724,16 @@ get_repository_features() {
             continue
         fi
         
-        local sec=$(echo "$repo_json" | jq -c '.security_and_analysis // {}')
+        # Validate JSON before parsing
+        if ! echo "$repo_json" | jq empty 2>/dev/null; then
+            echo -e " ${RED}✗ (invalid JSON)${NC}" >&2
+            continue
+        fi
+        
+        local sec=$(echo "$repo_json" | jq -c '.security_and_analysis // {}' 2>/dev/null)
+        if [[ -z "$sec" ]] || [[ "$sec" == "null" ]]; then
+            sec="{}"
+        fi
         
         # Check Code Scanning Default Setup
         local code_scanning_state="not-configured"
@@ -732,11 +741,11 @@ get_repository_features() {
         local code_scanning_schedule=""
         
         local cs_setup=$(invoke_github_api "/repos/$organization/$repo_name/code-scanning/default-setup" false 50 2>/dev/null)
-        if [[ -n "$cs_setup" ]]; then
-            code_scanning_state=$(echo "$cs_setup" | jq -r '.state // "not-configured"')
+        if [[ -n "$cs_setup" ]] && echo "$cs_setup" | jq empty 2>/dev/null; then
+            code_scanning_state=$(echo "$cs_setup" | jq -r '.state // "not-configured"' 2>/dev/null || echo "not-configured")
             if [[ "$code_scanning_state" == "configured" ]]; then
-                code_scanning_langs=$(echo "$cs_setup" | jq -r '.languages // [] | join(", ")')
-                code_scanning_schedule=$(echo "$cs_setup" | jq -r '.schedule // ""')
+                code_scanning_langs=$(echo "$cs_setup" | jq -r '.languages // [] | join(", ")' 2>/dev/null || echo "")
+                code_scanning_schedule=$(echo "$cs_setup" | jq -r '.schedule // ""' 2>/dev/null || echo "")
             fi
         fi
         
@@ -761,9 +770,14 @@ get_repository_features() {
                 CodeScanningDefaultSetup: $cs_state,
                 CodeScanningLanguages: $cs_langs,
                 CodeScanningSchedule: $cs_schedule
-            }')
+            }' 2>/dev/null)
         
-        features=$(echo "$features" | jq --arg key "$repo_name" --argjson val "$feature_obj" '. + {($key): $val}')
+        if [[ -z "$feature_obj" ]] || [[ "$feature_obj" == "null" ]]; then
+            echo -e " ${RED}✗ (failed to parse features)${NC}" >&2
+            continue
+        fi
+        
+        features=$(echo "$features" | jq --arg key "$repo_name" --argjson val "$feature_obj" '. + {($key): $val}' 2>/dev/null)
         
         echo -e " ${GREEN}✓${NC}" >&2
     done
