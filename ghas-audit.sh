@@ -333,6 +333,8 @@ invoke_github_api() {
     local paginate="${2:-false}"
     local throttle_ms="${3:-0}"
     
+    echo -e "${DARKGRAY}     [DEBUG] API Call: $endpoint (paginate=$paginate)${NC}" >&2
+    
     # Check rate limit before making request
     if [[ ${RATE_LIMIT_INFO[Remaining]} -lt 10 ]] && [[ ${RATE_LIMIT_INFO[Remaining]} -gt 0 ]]; then
         wait_for_rate_limit 10
@@ -349,12 +351,23 @@ invoke_github_api() {
         local response=$(timeout 300 gh api --paginate "$endpoint" 2>&1)
         local exit_code=$?
         
+        echo -e "${DARKGRAY}     [DEBUG] Paginated request exit code: $exit_code${NC}" >&2
+        
         if [[ $exit_code -eq 124 ]]; then
             echo -e "${RED}  Error: API request timed out after 5 minutes${NC}" >&2
+            echo -e "${RED}  Endpoint: $endpoint${NC}" >&2
             return 1
         fi
         
-        if [[ $exit_code -eq 0 ]] && [[ -n "$response" ]]; then
+        if [[ $exit_code -ne 0 ]]; then
+            echo -e "${RED}  Error: API request failed with exit code $exit_code${NC}" >&2
+            echo -e "${RED}  Endpoint: $endpoint${NC}" >&2
+            echo -e "${RED}  Response: ${response:0:500}${NC}" >&2
+            return 1
+        fi
+        
+        if [[ -n "$response" ]]; then
+            echo -e "${DARKGRAY}     [DEBUG] Response length: ${#response} chars${NC}" >&2
             # Update rate limit info with a separate call
             local header_response=$(timeout 30 gh api --include "$endpoint" 2>&1)
             if [[ $? -eq 0 ]] && [[ -n "$header_response" ]]; then
@@ -363,32 +376,54 @@ invoke_github_api() {
             fi
             echo "$response"
             return 0
+        else
+            echo -e "${YELLOW}  Warning: Empty response from $endpoint${NC}" >&2
+            return 1
         fi
     else
         # For single requests, get headers and body
         local response=$(timeout 60 gh api --include "$endpoint" 2>&1)
         local exit_code=$?
         
+        echo -e "${DARKGRAY}     [DEBUG] Single request exit code: $exit_code${NC}" >&2
+        
         if [[ $exit_code -eq 124 ]]; then
             echo -e "${RED}  Error: API request timed out${NC}" >&2
+            echo -e "${RED}  Endpoint: $endpoint${NC}" >&2
             return 1
         fi
         
-        if [[ $exit_code -eq 0 ]] && [[ -n "$response" ]]; then
+        if [[ $exit_code -ne 0 ]]; then
+            echo -e "${RED}  Error: API request failed with exit code $exit_code${NC}" >&2
+            echo -e "${RED}  Endpoint: $endpoint${NC}" >&2
+            echo -e "${RED}  Response: ${response:0:500}${NC}" >&2
+            return 1
+        fi
+        
+        if [[ -n "$response" ]]; then
+            echo -e "${DARKGRAY}     [DEBUG] Response length: ${#response} chars${NC}" >&2
+            
             # Extract headers (everything before the first { or [)
             local headers=$(echo "$response" | sed '/^[{\[]/,$d')
             # Extract body (everything from the first { or [)
             local body=$(echo "$response" | sed -n '/^[{\[]/,$p')
             
+            if [[ -z "$body" ]]; then
+                echo -e "${YELLOW}  Warning: Could not extract body from response${NC}" >&2
+                echo -e "${DARKGRAY}     [DEBUG] Full response: ${response:0:500}${NC}" >&2
+                return 1
+            fi
+            
+            echo -e "${DARKGRAY}     [DEBUG] Body length: ${#body} chars${NC}" >&2
+            
             update_rate_limit_info "$headers"
             echo "$body"
             return 0
         else
-            echo -e "${YELLOW}  Warning: API request failed for $endpoint${NC}" >&2
+            echo -e "${YELLOW}  Warning: Empty response for $endpoint${NC}" >&2
+            return 1
         fi
     fi
-    
-    return 1
 }
 
 get_normalized_repo_name() {
@@ -488,16 +523,24 @@ get_ghas_billing_info() {
     for product in "${products[@]}"; do
         echo -e "${GRAY}  → Fetching billing data for $product...${NC}" >&2
         local response=$(invoke_github_api "/orgs/$organization/settings/billing/advanced-security?advanced_security_product=$product" false 0)
+        local api_exit_code=$?
+        
+        echo -e "${DARKGRAY}     [DEBUG] Billing API exit code: $api_exit_code${NC}" >&2
         
         # Debug: show response length and first chars
         if [[ -n "$response" ]]; then
             echo -e "${DARKGRAY}     Response received: ${#response} chars${NC}" >&2
+            echo -e "${DARKGRAY}     First 200 chars: ${response:0:200}${NC}" >&2
         else
-            echo -e "${DARKGRAY}     No response received${NC}" >&2
+            echo -e "${YELLOW}     ⚠ No billing access for $product (this is normal if billing permissions are not granted)${NC}" >&2
+            echo -e "${DARKGRAY}     [DEBUG] API call returned exit code $api_exit_code with empty response${NC}" >&2
+            continue
         fi
         
         # Validate JSON before processing
-        if [[ -n "$response" ]] && echo "$response" | jq empty 2>/dev/null; then
+        local jq_validation=$(echo "$response" | jq empty 2>&1)
+        if [[ $? -eq 0 ]]; then
+            echo -e "${DARKGRAY}     [DEBUG] JSON validation: OK${NC}" >&2
             local prod_committers=$(echo "$response" | jq -r '.total_advanced_security_committers // 0')
             local prod_count=$(echo "$response" | jq -r '.total_count // 0')
             local prod_max=$(echo "$response" | jq -r '.maximum_advanced_security_committers // 0')
@@ -524,7 +567,12 @@ get_ghas_billing_info() {
             fi
             
             # Merge repositories with product marker
-            local tagged_repos=$(echo "$prod_repos" | jq --arg pt "$product" '[.[] | . + {product_type: $pt}]')
+            echo -e "${DARKGRAY}     [DEBUG] Processing ${prod_count} repos for $product${NC}" >&2
+            local tagged_repos=$(echo "$prod_repos" | jq --arg pt "$product" '[.[] | . + {product_type: $pt}]' 2>&1)
+            if [[ $? -ne 0 ]]; then
+                echo -e "${RED}     Error tagging repos: $tagged_repos${NC}" >&2
+                continue
+            fi
             
             # Add or merge repositories
             repositories=$(echo "$repositories $tagged_repos" | jq -s '
@@ -538,7 +586,16 @@ get_ghas_billing_info() {
                         .
                     end
                 ))) | unique_by(.name)
-            ')
+            ' 2>&1)
+            if [[ $? -ne 0 ]]; then
+                echo -e "${RED}     Error merging repos: $repositories${NC}" >&2
+            else
+                echo -e "${DARKGRAY}     [DEBUG] Total unique repos after merge: $(echo "$repositories" | jq 'length')${NC}" >&2
+            fi
+        else
+            echo -e "${RED}     Error: Invalid JSON response for $product${NC}" >&2
+            echo -e "${RED}     JQ validation error: $jq_validation${NC}" >&2
+            echo -e "${DARKGRAY}     Response sample: ${response:0:300}${NC}" >&2
         fi
     done
     
@@ -870,23 +927,29 @@ get_committer_details() {
     local author="$3"
     local ghas_enabled_date="$4"
     
+    echo -e "${DARKGRAY}     [DEBUG] get_committer_details: repo=$repository, author=$author, date=$ghas_enabled_date${NC}" >&2
+    
     local first_push=""
     local first_sha=""
     
     # Only query commits if we have a GHAS enabled date
     if [[ -z "$ghas_enabled_date" ]]; then
+        echo -e "${DARKGRAY}     [DEBUG] No GHAS enabled date, skipping${NC}" >&2
         jq -n '{FirstPushDateAfterGHAS: "", FirstCommitSHA: ""}'
         return
     fi
     
     local since_param=$(convert_to_iso8601 "$ghas_enabled_date")
+    echo -e "${DARKGRAY}     [DEBUG] Converted date to ISO8601: $since_param${NC}" >&2
     
     if [[ -n "$since_param" ]]; then
-        local commits=$(invoke_github_api "/repos/$organization/$repository/commits?author=$author&since=$since_param&per_page=100" false 50 2>&1)
+        local commits=$(invoke_github_api "/repos/$organization/$repository/commits?author=$author&since=$since_param&per_page=100" false 50)
         local api_result=$?
         
+        echo -e "${DARKGRAY}     [DEBUG] Commits API result: $api_result${NC}" >&2
+        
         if [[ $api_result -ne 0 ]]; then
-            echo -e "${YELLOW}    ⚠ Could not fetch commits for $author in $repository${NC}" >&2
+            echo -e "${YELLOW}    ⚠ Could not fetch commits for $author in $repository (exit code: $api_result)${NC}" >&2
             jq -n '{FirstPushDateAfterGHAS: "", FirstCommitSHA: ""}'
             return
         fi
