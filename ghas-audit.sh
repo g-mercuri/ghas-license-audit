@@ -328,6 +328,35 @@ wait_for_rate_limit() {
     fi
 }
 
+# Cross-platform timeout wrapper
+# Usage: run_with_timeout <seconds> <command>
+run_with_timeout() {
+    local seconds="$1"
+    shift
+    
+    # Check if timeout command is available (Linux)
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$seconds" "$@"
+        return $?
+    fi
+    
+    # macOS and other Unix systems - use perl (available by default)
+    if command -v perl >/dev/null 2>&1; then
+        perl -e "alarm $seconds; exec @ARGV" "$@"
+        local exit_code=$?
+        # Exit code 142 means timeout (SIGALRM)
+        if [[ $exit_code -eq 142 ]]; then
+            return 124  # Return same code as timeout command
+        fi
+        return $exit_code
+    fi
+    
+    # Fallback for systems without timeout or perl
+    # Run the command without timeout protection
+    "$@"
+    return $?
+}
+
 invoke_github_api() {
     local endpoint="$1"
     local paginate="${2:-false}"
@@ -348,7 +377,7 @@ invoke_github_api() {
     # Execute request with timeout protection
     if [[ "$paginate" == "true" ]]; then
         # For paginated requests, get data without headers first
-        local response=$(timeout 300 gh api --paginate "$endpoint" 2>&1)
+        local response=$(run_with_timeout 300 gh api --paginate "$endpoint" 2>&1)
         local exit_code=$?
         
         echo -e "${DARKGRAY}     [DEBUG] Paginated request exit code: $exit_code${NC}" >&2
@@ -369,7 +398,7 @@ invoke_github_api() {
         if [[ -n "$response" ]]; then
             echo -e "${DARKGRAY}     [DEBUG] Response length: ${#response} chars${NC}" >&2
             # Update rate limit info with a separate call
-            local header_response=$(timeout 30 gh api --include "$endpoint" 2>&1)
+            local header_response=$(run_with_timeout 30 gh api --include "$endpoint" 2>&1)
             if [[ $? -eq 0 ]] && [[ -n "$header_response" ]]; then
                 local headers=$(echo "$header_response" | sed '/^{/,$d')
                 update_rate_limit_info "$headers"
@@ -382,7 +411,7 @@ invoke_github_api() {
         fi
     else
         # For single requests, get headers and body
-        local response=$(timeout 60 gh api --include "$endpoint" 2>&1)
+        local response=$(run_with_timeout 60 gh api --include "$endpoint" 2>&1)
         local exit_code=$?
         
         echo -e "${DARKGRAY}     [DEBUG] Single request exit code: $exit_code${NC}" >&2
